@@ -1,0 +1,251 @@
+---
+title: "Forecasting Business Turnover with ARIMA model"
+author: "Changsoo Byun"
+output: pdf_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval=TRUE, error=TRUE, cache=TRUE)
+library(fpp3)
+library(readr)
+
+```
+
+```{r echo=FALSE, message=FALSE}
+meta <- read_csv("aus_market_data.csv", col_names = TRUE, n_max = 3)
+
+dat <- read_csv("aus_market_data.csv", 
+                col_names = colnames(meta),
+                skip = 4)
+
+data <- dat %>% 
+  rename(Month = "ID", y ="442222") %>%
+  select(Month, y) %>% 
+  mutate(Month=yearmonth(Month)) %>% 
+  as_tsibble(index = Month)
+
+```
+
+
+
+```{r}
+p1 <- data |> 
+  autoplot(y)
+
+p2 <- data |> 
+  autoplot(log(y))
+
+p3 <- data |> autoplot(log(y) |> difference(12))
+
+data |>
+  mutate(log_turnover = difference(log(y), 12)) |>
+  features(log_turnover, unitroot_kpss)
+
+p4 <- data |> autoplot(log(y) |> difference(12) |> difference())
+
+
+data |>
+  mutate(log_turnover2 = difference(log(y), 12) |> difference()) |>
+  features(log_turnover2, unitroot_kpss)
+
+
+```
+
+p1: The original data exhibits a noticeable trend and seasonality, and the variance increases as the level of the series increases. Despite these characteristics, the data is not stationary. Applying transformations and differencing can help address these issues and make the data appear stationary.
+
+p2: Applying a log transformation simplifies the patterns in the historical data by removing known sources of variation and making the overall pattern more consistent. However, the data is still not stationary.
+
+p3: The data in p3 represents the result of seasonal differencing. The KPSS test yields a p-value of 0.01, indicating that the null hypothesis of stationarity is rejected. This suggests that the seasonal differenced data is not stationary and requires further differencing.
+
+p4: The data in p4 represents the seasonal and first-order differenced data. The KPSS test yields a p-value of 0.1, which does not provide sufficient evidence to reject the null hypothesis. Therefore, it can be concluded that the seasonal and first-order differenced data appear to be stationary.
+
+\newpage
+
+
+```{r}
+
+data |> gg_tsdisplay(
+  log(y) |> difference(12) |> 
+    difference(),plot_type="partial"
+)
+
+fit <- data |> 
+  model(arima = ARIMA(log(y) ~ pdq(0,1,3) + PDQ(0,1,2)))
+report(fit)
+
+```
+For the seasonal component, acf shows MA(2) and pacf shows AR(2). They have the same parameter, MA(2) is chosen to use in this case.
+For non-seasonal components which beloew 12, there are 3 significant spikes in acf, and 5 significant spikes in pacf.Hence, MA(5) is selected as it is more parsimonious model. d id 1 for both because of both seasonal and first order difference. Thus, (0,1,5)(0,1,2) is used
+
+
+
+\newpage
+
+```{r}
+fit |> gg_tsresiduals()
+augment(fit) |> 
+  features(.innov, ljung_box, lag=24, dof=5)
+```
+There are several significant spikes crossed the bounds, so the series is not white noise. And ljung box test p value rejects the null hypothesis that the series is white noise. It is better to consider the alternative models there are many significant spikes. 
+
+\newpage
+
+```{r}
+
+
+fit2 <- data |> 
+  model(
+    arima = ARIMA(log(y) ~ pdq(0,1,3) + PDQ(0,1,2)), #Originally chosen one
+    arima2 = ARIMA(log(y) ~ pdq(0,1,3) + PDQ(2,1,0)), #Same number of spikes in seasonal components
+    arima3 = ARIMA(log(y) ~ pdq(0,0,1) + PDQ(0,1,2)), #Only seasonal difference
+    arima4 = ARIMA(log(y) ~ pdq(0,0,2) + PDQ(0,1,2)), #Only seasonal difference
+    )
+glance(fit2) |> arrange (AICc)
+
+```
+
+According to the AICc value, ARIMA(0,1,3)(0,1,2) model is better as it produces the lowest value. It is the originally selected model in the previous question
+
+
+\newpage
+
+```{r}
+fit3 <- data |> 
+  model(auto = ARIMA(log(y),
+                     stepwise = FALSE,
+                     approximation = FALSE)
+        )
+
+report(fit3)
+
+fit3 |> gg_tsresiduals()
+
+augment(fit3) |> 
+  features(.innov, ljung_box, lag=24, dof=5)
+```
+
+The ARIMA() function uses an ARIMA(0,1,1)(2,1,2) model, which is more complex compared to the ARIMA(0,1,3)(0,1,2) model chosen in Q4. However, the ARIMA() function has a lower AICc value, indicating that it provides a better model according to information criteria. The residuals show clear differences between the two models, ARIMA(0,1,1)(2,1,2) has fewer significant spikes and some of them got closer to the bounds. The Ljung-Box test rejects the null hypothesis that the series is white noise, suggesting that the ARIMA(0,1,1)(2,1,2) model is not performing that well.
+
+\newpage
+
+```{r}
+test <- data |> 
+  slice(1:441)
+
+test |> 
+  model(
+    arima = ARIMA(log(y) ~ pdq(0,1,3) + PDQ(0,1,2)),
+    arima2 = ARIMA(log(y) ~ pdq(0,1,3) + PDQ(2,1,0)), 
+    arima3 = ARIMA(log(y) ~ pdq(0,0,1) + PDQ(0,1,2)), 
+    arima4 = ARIMA(log(y) ~ pdq(0,0,2) + PDQ(0,1,2)),
+    auto = ARIMA(log(y),
+                     stepwise = FALSE,
+                     approximation = FALSE)
+      
+      ) |> 
+  forecast(h="2 years") |> 
+  accuracy(data)|>
+  select(.model, RMSE:MAPE)
+
+```
+The auto model ARIMA(0,1,1)(2,1,2) will be chosen as the models chosen manually are close to the best model over this test set based on the RMSE values, while the model chosen automatically with ARIMA() is not far behind. It has the lowest AICc and second lowest RMSE.
+
+\newpage
+
+```{r}
+fit3 |> 
+  forecast(h= "2 years") |> 
+  autoplot(data)+
+  labs(y= "$(millions)",
+       title= "Forecasts for montly turnover of supermarket and grocery stores")+
+  guides(colour = guide_legend(title = "Forecast"))
+```
+The plot shows the 80% and 95% prediction intervals and the point forecasts for the turnover of supermarket and grocery stores in New South Wales based on ARIMA method.The point forecasts look reasonable, but the intervals are narrow, recalling that only few of autocorrelation was left over in the residuals hence these will affect predictions intervals.
+
+\newpage
+
+```{r echo=FALSE, message=FALSE}
+meta2 <- read_csv("new data.csv", col_names = TRUE, n_max = 3)
+dat2 <- read_csv("new data.csv", 
+                col_names = colnames(meta2),
+                skip = 4)
+
+newdata <- dat2 %>% 
+  rename(Month = "Student ID", y ="31425208") %>%
+  select(Month, y) %>% 
+  mutate(Month=yearmonth(Month)) %>% 
+  as_tsibble(index = Month)
+
+```
+
+```{r}
+np <- newdata |>  
+  autoplot(y) + 
+  labs(title="Turnover of Supermarket and Grocery Stores",
+       subtitle="New South Wales",
+       y="$(millions)")
+
+nsp <- newdata %>% gg_season(y) + 
+  labs(title="Turnover of Supermarket and Grocery Stores",
+       subtitle="New South Wales",
+       y="$(millions)")
+nsp
+```
+The turnover rate in the supermarket follows a consistent trend and seasonality in the time plot. However, there was a significant increase in March 2021, likely due to people buying a large quantity of products in preparation for COVID isolation. This anomaly stands out and reflects the impact of external events on customer behavior and supermarket performance.
+
+\newpage
+
+```{r}
+fc <- data |> 
+  model(
+    snaive=SNAIVE(log(y)),
+    ets=ETS(log(y)),
+    auto = ARIMA(log(y),
+                     stepwise = FALSE,
+                     approximation = FALSE)
+    
+  ) |> 
+  forecast(h=27)
+
+fc |> autoplot(data)+
+  labs(y= "$(millions)",
+       title= "Forecasts for montly turnover of supermarket and grocery stores")+
+  guides(colour = guide_legend(title = "Forecast"))
+```
+The point forecasts look to be quite similar, but SNAIVE produces lower values and wider forecast interval than other two models.
+
+\newpage
+
+```{r}
+fc |> accuracy(newdata)
+```
+Baed on the table, ETS model has the lowest RMSE value, indicating this model gives the most accurate forecasts.
+
+\newpage
+
+```{r}
+fc2 <- newdata |> 
+  model(
+    snaive=SNAIVE(log(y)),
+    ets=ETS(log(y)),
+    auto = ARIMA(log(y),
+                     stepwise = FALSE,
+                     approximation = FALSE)
+    
+  ) |> 
+  forecast(h=24)
+
+fc2 |> autoplot(newdata)+
+  labs(y= "$(millions)",
+       title= "Forecasts for montly turnover of supermarket and grocery stores")+
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+Based on the generated plot, both the ARIMA and ETS models exhibit reasonable forecast points by capturing the trend and seasonality of the turnover rate, even in the presence of the pandemic's impact. Despite the significant increase in turnover rate in March 2021, the seasonality and trend remain consistent across all three models.
+
+However, the SNAIVE model shows lower forecast values and wider intervals compared to the other two models. Nevertheless, it still manages to capture the underlying seasonality and trend observed in the data. It is worth noting that the turnover rate of supermarkets and grocery stores in NSW generally experiences an increase during March, coinciding with the drastic surge observed in March 2021. This suggests that the impact of COVID on the turnover rate may not be as pronounced in the series.
+
+Overall, despite some variations in forecast values and intervals, all three models successfully capture the seasonality and trend of the turnover rate, with the ARIMA and ETS models demonstrating reasonable forecasts.
+
