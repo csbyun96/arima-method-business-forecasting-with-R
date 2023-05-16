@@ -1,1 +1,1 @@
-# arima-method-business-forecasting-with-R
+# Business Forecasting using ARIMA method with R
